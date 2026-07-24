@@ -7,7 +7,8 @@ DEATH_TEMPLATE_PATH = r"data\death_template.png"
 TARGET_FPS=4
 BUFFER_SECONDS=10
 MAX_BUFFER_LENGTH=TARGET_FPS * BUFFER_SECONDS
-MACTH_THRESHOLD = 0.8
+MACTH_THRESHOLD = 0.41
+import math 
 
 
 event_buffer=deque(maxlen=MAX_BUFFER_LENGTH)
@@ -31,8 +32,10 @@ def main():
     if death_template is None :
         print(f"Error: Could not find {DEATH_TEMPLATE_PATH}. Did you save the crop?")
         return 
+    # _, template_mask = cv2.threshold(death_template, 200,255, cv2.THRESH_BINARY)
 
-    _, binary_template=cv2.threshold(death_template,180,255,cv2.THRESH_BINARY)
+    template_edges=cv2.Canny(death_template,50,150)
+    # _, binary_template=cv2.threshold(death_template,180,255,cv2.THRESH_BINARY)
 
     original_fps=cap.get(cv2.CAP_PROP_FPS)
     frame_skip_interval = int(original_fps/TARGET_FPS)
@@ -64,12 +67,15 @@ def main():
         # Lightweight CV / METADATA EXTRACTION 
         gray_frame=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
 
-        _,binary_frame = cv2.threshold(gray_frame,180,255,cv2.THRESH_BINARY)
+        # _,binary_frame = cv2.threshold(gray_frame,180,255,cv2.THRESH_BINARY)
+        frame_edges= cv2.Canny(gray_frame,50,150)
 
-
-        result=cv2.matchTemplate(binary_frame,binary_template,cv2.TM_CCOEFF_NORMED)
+        # result=cv2.matchTemplate(binary_frame,binary_template,cv2.TM_CCOEFF_NORMED)
+        result=cv2.matchTemplate(frame_edges,template_edges,cv2.TM_CCOEFF_NORMED)
         min_val,max_val,min_loc,max_loc=cv2.minMaxLoc(result)
 
+        if math.isinf(max_val) or math.isnan(max_val):
+            max_val=0.0
         print(f"[{timestamp}] Checking template... Confidence: {max_val:.2f}")
 
 
