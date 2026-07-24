@@ -7,7 +7,7 @@ DEATH_TEMPLATE_PATH = r"data\death_template.png"
 TARGET_FPS=4
 BUFFER_SECONDS=10
 MAX_BUFFER_LENGTH=TARGET_FPS * BUFFER_SECONDS
-MATHC_THRESHOLD = 0.8
+MACTH_THRESHOLD = 0.8
 
 
 event_buffer=deque(maxlen=MAX_BUFFER_LENGTH)
@@ -31,6 +31,8 @@ def main():
     if death_template is None :
         print(f"Error: Could not find {DEATH_TEMPLATE_PATH}. Did you save the crop?")
         return 
+
+    _, binary_template=cv2.threshold(death_template,180,255,cv2.THRESH_BINARY)
 
     original_fps=cap.get(cv2.CAP_PROP_FPS)
     frame_skip_interval = int(original_fps/TARGET_FPS)
@@ -62,13 +64,16 @@ def main():
         # Lightweight CV / METADATA EXTRACTION 
         gray_frame=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
 
-        result=cv2.matchTemplate(gray_frame,death_template,cv2.TM_CCOEFF_NORMED)
+        _,binary_frame = cv2.threshold(gray_frame,180,255,cv2.THRESH_BINARY)
+
+
+        result=cv2.matchTemplate(binary_frame,binary_template,cv2.TM_CCOEFF_NORMED)
         min_val,max_val,min_loc,max_loc=cv2.minMaxLoc(result)
 
         print(f"[{timestamp}] Checking template... Confidence: {max_val:.2f}")
 
 
-        if max_val >= 0.6:
+        if max_val >= MACTH_THRESHOLD:
             mock_status = "DEAD"
         else:
             mock_status="Alive"
