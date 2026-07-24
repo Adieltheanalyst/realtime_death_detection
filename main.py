@@ -3,9 +3,11 @@ from collections import deque
 import time
 
 VIDEO_PATH=r"data/valorant_test_clip.mp4"
+DEATH_TEMPLATE_PATH = r"data\death_template.png"
 TARGET_FPS=4
 BUFFER_SECONDS=10
 MAX_BUFFER_LENGTH=TARGET_FPS * BUFFER_SECONDS
+MATHC_THRESHOLD = 0.8
 
 
 event_buffer=deque(maxlen=MAX_BUFFER_LENGTH)
@@ -25,11 +27,22 @@ def main():
         print(f"Error: Could not open video file {VIDEO_PATH}")
         return 
 
+    death_template=cv2.imread(DEATH_TEMPLATE_PATH,0)
+    if death_template is None :
+        print(f"Error: Could not find {DEATH_TEMPLATE_PATH}. Did you save the crop?")
+        return 
+
     original_fps=cap.get(cv2.CAP_PROP_FPS)
     frame_skip_interval = int(original_fps/TARGET_FPS)
-
-    frame_count=0
+    
+    start_time_sec = 55
+    cap.set(cv2.CAP_PROP_POS_MSEC, start_time_sec * 1000)
+    frame_count= int(start_time_sec*original_fps)
+    
     print(f"Starting pipeline. Original FPS: {original_fps}. Processing at {TARGET_FPS} FPS.")
+
+    cv2.namedWindow("Video Feed", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Video Feed", 1280, 720)
 
     while True:
         ret,frame=cap.read()
@@ -47,19 +60,31 @@ def main():
         timestamp=f"{current_time_sec:.1f}s"
 
         # Lightweight CV / METADATA EXTRACTION 
+        gray_frame=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
 
+        result=cv2.matchTemplate(gray_frame,death_template,cv2.TM_CCOEFF_NORMED)
+        min_val,max_val,min_loc,max_loc=cv2.minMaxLoc(result)
+
+        print(f"[{timestamp}] Checking template... Confidence: {max_val:.2f}")
+
+
+        if max_val >= 0.6:
+            mock_status = "DEAD"
+        else:
+            mock_status="Alive"
         mock_health=100
-        mock_status = "Alive"
+
+
 
         metadata_entry=f"[{timestamp}] Health: {mock_health} | Status: {mock_status}"
         event_buffer.append(metadata_entry)
 
-        # Trigger Detection 
-        if current_time_sec >= 15.0:
-            print(f"\n[TRIGGER] Death detected at {timestamp}!")
+        cv2.imshow("Video Feed", frame)
 
+        if mock_status == "DEAD":
+            print(f"\n[CV TRIGGER] Death icon detected at {timestamp} with {max_val:.2f} confidence!")
             start_time=time.time()
-            summary=mock_llm_summarizer(list(event_buffer))
+            summary= mock_llm_summarizer(list(event_buffer))
             end_time = time.time()
 
             print(f"\n>>> FINAL OUTPUT: {summary}")
