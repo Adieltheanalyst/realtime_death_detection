@@ -2,7 +2,7 @@ import cv2
 from collections import deque
 import time
 
-VIDEO_PATH="valorant_test_clip.mp4"
+VIDEO_PATH=r"data/valorant_test_clip.mp4"
 TARGET_FPS=4
 BUFFER_SECONDS=10
 MAX_BUFFER_LENGTH=TARGET_FPS * BUFFER_SECONDS
