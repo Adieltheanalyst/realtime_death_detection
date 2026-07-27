@@ -7,6 +7,7 @@ import numpy as np
 
 VIDEO_PATH=r"data/valorant_test_clip.mp4"
 DEATH_TEMPLATE_PATH = r"data\death_template.png"
+HUD_TEMPLATE_PATH=r"data\hud_template.png"
 TARGET_FPS=4
 BUFFER_SECONDS=10
 MAX_BUFFER_LENGTH=TARGET_FPS * BUFFER_SECONDS
@@ -15,6 +16,9 @@ START_TIME_SEC = 55
 ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 1369, 504, 1875, 635
 MATCH_THRESHOLD = 0.75
 CONFIRM_FRAMES=2
+
+HUD_X1,HUD_Y1, HUD_X2, HUD_Y2=0,0,0,0
+HUD_MATCH_THRESHOLD=0.70
 RESPAWN_CONFIRM_FRAMES=4
 
 
@@ -36,12 +40,6 @@ def mock_llm_summarizer(buffer_data):
     time.sleep(1)
     return "Player took damage, dropped to 10 health and was eliminated"
 
-# def estimate_health(gray_frame):
-#     """Health %, from how much of the bar's width contains bright pixels."""
-#     strip = gray_frame[HP_Y1:HP_Y2, HP_X1:HP_X2]
-#     _, binary = cv2.threshold(strip, HP_BRIGHTNESS, 255, cv2.THRESH_BINARY)
-#     filled_columns = (binary.max(axis=0) > 0).sum()
-#     return int(round(100 * filled_columns / binary.shape[1]))
 
 def damage_redness(frame_bgr):
     """Mean 'redness' of the left/right/bottom screen edges.
@@ -56,6 +54,15 @@ def damage_redness(frame_bgr):
         score += float(redness.mean())
     return score / len(strips)
 
+def roi_match(gray_frame,template, x1,y1,x2,y2):
+    """Best template- match confidence inside a rectangular ROI."""
+    roi = gray_frame[y1:y2, x1:x2]
+    result = cv2.matchTemplate(roi, template,cv2.TM_CCOEFF_NORMED)
+    _,max_val,_,_ = cv2.minMaxLoc(result)
+    return max_val
+
+
+
 def main():
     cap=cv2.VideoCapture(VIDEO_PATH)
 
@@ -67,12 +74,23 @@ def main():
     if death_template is None :
         print(f"Error: Could not find {DEATH_TEMPLATE_PATH}. Did you save the crop?")
         return 
-    # _, template_mask = cv2.threshold(death_template, 200,255, cv2.THRESH_BINARY)
 
-    th,tw = death_template.shape
-    if tw> (ROI_X2 - ROI_X1) or th > (ROI_Y2 - ROI_Y1):
-        print("Error: ROI is smaller than the template. Re-run calibrate_roi.py")
+    hud_template= cv2.imread(HUD_TEMPLATE_PATH,0)
+    if hud_template is None:
+        print(f"Error: Could not find {HUD_TEMPLATE_PATH}."
+              f"Run pick_roi.py to create it.")
         return 
+    if HUD_X2 <= HUD_X1 or HUD_Y2 <= HUD_Y1:
+        print("Error: HUD ROI not set. Run pick_roi.py and paste the "
+              "printed HUD constants into main.py.")
+        return
+
+
+    
+    # th,tw = death_template.shape
+    # if tw> (ROI_X2 - ROI_X1) or th > (ROI_Y2 - ROI_Y1):
+    #     print("Error: ROI is smaller than the template. Re-run calibrate_roi.py")
+    #     return 
     
 
     # template_edges=cv2.Canny(death_template,50,150)
@@ -84,9 +102,8 @@ def main():
     cap.set(cv2.CAP_PROP_POS_MSEC, START_TIME_SEC * 1000)
     frame_count= int(START_TIME_SEC*original_fps)
     
-    print(f"Starting pipeline. Original FPS: {original_fps}." 
-          f"Processing at {TARGET_FPS} FPS."
-          f"({ROI_X1}, {ROI_Y1})-({ROI_X2},{ROI_Y2})")
+    print(f"Starting pipeline. Original FPS: {original_fps:.0f} FPS, " 
+          f"Processing at {TARGET_FPS} FPS.")
 
     cv2.namedWindow("Video Feed", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Video Feed", 1280, 720)
@@ -120,31 +137,47 @@ def main():
 
         # Lightweight CV / METADATA EXTRACTION 
         gray_frame=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
-        roi = gray_frame[ROI_Y1:ROI_Y2, ROI_X1:ROI_X2]
+        # roi = gray_frame[ROI_Y1:ROI_Y2, ROI_X1:ROI_X2]
+
+        death_conf = roi_match(gray_frame, death_template,
+                               ROI_X1, ROI_Y1, ROI_X2, ROI_Y2)
+        hud_conf = roi_match(gray_frame, hud_template,
+                             HUD_X1, HUD_Y1, HUD_X2, HUD_Y2)
+        
+
+
 
         # # _,binary_frame = cv2.threshold(gray_frame,180,255,cv2.THRESH_BINARY)
         # frame_edges= cv2.Canny(gray_frame,50,150)
 
         # result=cv2.matchTemplate(binary_frame,binary_template,cv2.TM_CCOEFF_NORMED)
-        result=cv2.matchTemplate(roi,death_template,cv2.TM_CCOEFF_NORMED)
-        _,max_val,_,_=cv2.minMaxLoc(result)
+        # result=cv2.matchTemplate(roi,death_template,cv2.TM_CCOEFF_NORMED)
+        # _,max_val,_,_=cv2.minMaxLoc(result)
 
         
 
-        banner_present = max_val >= MATCH_THRESHOLD
-        consecutive_hits = consecutive_hits +1 if banner_present else 0
-        consecutive_misses=0 if banner_present else consecutive_misses + 1
+        banner_present = death_conf >= MATCH_THRESHOLD
+        hud_present = hud_conf >= HUD_MATCH_THRESHOLD
+        consecutive_deaths=consecutive_deaths + 1 if banner_present else 0
+        consecutive_hud = consecutive_hud + 1 if hud_present else 0
+
+
 
         redness = damage_redness(frame)
         if redness_baseline is None:
             redness_baseline = redness
-        taking_damage = redness >= redness_baseline + DAMAGE_DELTA
-        if not taking_damage:
-            redness_baseline = ((1- BASELINE_ALPHA)* redness_baseline
-                                + BASELINE_ALPHA*redness )
-        print(f"[{timestamp}] State: {player_state} | Conf: {max_val:.2f} | "
-              f"Redness: {redness:.1f} (base {redness_baseline:.1f})")
+        taking_damage = (hud_present and
+                         redness >= redness_baseline + DAMAGE_DELTA)
 
+        if hud_present and not taking_damage:
+            redness_baseline = ((1 - BASELINE_ALPHA) * redness_baseline
+                                + BASELINE_ALPHA * redness)
+        print(f"[{timestamp}] {player_state} | Death: {death_conf:.2f} | "
+              f"HUD: {hud_conf:.2f} | Red: {redness:.1f}" 
+              f"(base {redness_baseline:.1f})")
+        
+
+        
         if player_state == "ALIVE":
             if taking_damage and not was_taking_damage:
                 event_buffer.append(f"[{timestamp}] EVENT: TOOK DAMAGE")
@@ -158,7 +191,7 @@ def main():
                 event_buffer.append(f"[{timestamp}] Status: DEAD")
 
                 print(f"\n[CV TRIGGER] Death #{death_count} detected at "
-                      f"{timestamp} (confidence {max_val:.2f})")
+                      f"{timestamp} (confidence {death_conf:.2f})")
                 print("--- BUFFER CONTENTS ---")
                 print("\n".join(event_buffer))
 
@@ -171,14 +204,15 @@ def main():
                 event_buffer.clear()
                 player_state="DEAD"
                 was_taking_damage=False
+                consecutive_hud=0
 
         elif player_state == "DEAD":
-            if consecutive_misses >= RESPAWN_CONFIRM_FRAMES:
+            if consecutive_hud >= RESPAWN_CONFIRM_FRAMES:
                 player_state = "ALIVE"
                 event_buffer.clear()
                 event_buffer.append(f"[{timestamp}] EVENT: RESPAWNED")
                 print(f"\n[STATE] Respawn detected at {timestamp}. "
-                      f"Buffer flushed - watching for next death.\n")
+                      f"(HUD back). Buffer flushed.\n")
     cap.release()
     cv2.destroyAllWindows()
     print(f"\nRun complete. Deaths detected and summarized: {death_count}")
