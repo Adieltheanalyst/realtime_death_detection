@@ -17,8 +17,10 @@ ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 1369, 504, 1875, 635
 MATCH_THRESHOLD = 0.75
 CONFIRM_FRAMES=2
 
-HUD_X1,HUD_Y1, HUD_X2, HUD_Y2=0,0,0,0
+HUD_X1, HUD_Y1, HUD_X2, HUD_Y2 = 698, 1026, 1248, 1080
+
 HUD_MATCH_THRESHOLD=0.70
+
 RESPAWN_CONFIRM_FRAMES=4
 
 
@@ -87,15 +89,8 @@ def main():
 
 
     
-    # th,tw = death_template.shape
-    # if tw> (ROI_X2 - ROI_X1) or th > (ROI_Y2 - ROI_Y1):
-    #     print("Error: ROI is smaller than the template. Re-run calibrate_roi.py")
-    #     return 
+
     
-
-    # template_edges=cv2.Canny(death_template,50,150)
-    # _, binary_template=cv2.threshold(death_template,180,255,cv2.THRESH_BINARY)
-
     original_fps=cap.get(cv2.CAP_PROP_FPS)
     frame_skip_interval = int(original_fps/TARGET_FPS)
     
@@ -110,8 +105,8 @@ def main():
 
     # State
     player_state= "ALIVE"
-    consecutive_hits=0
-    consecutive_misses = 0
+    consecutive_deaths=0
+    consecutive_hud=0
     was_taking_damage=False
     redness_baseline = None
     death_count=0
@@ -159,7 +154,8 @@ def main():
         banner_present = death_conf >= MATCH_THRESHOLD
         hud_present = hud_conf >= HUD_MATCH_THRESHOLD
         consecutive_deaths=consecutive_deaths + 1 if banner_present else 0
-        consecutive_hud = consecutive_hud + 1 if hud_present else 0
+        consecutive_hud = (consecutive_hud + 1 
+                           if (hud_present and not banner_present) else 0)
 
 
 
@@ -185,7 +181,7 @@ def main():
                 event_buffer.append(f"[{timestamp}] Status: Alive")
             was_taking_damage = taking_damage
 
-            if consecutive_hits >= CONFIRM_FRAMES:
+            if consecutive_deaths >= CONFIRM_FRAMES:
                 death_count += 1
                 detection_time = time.time()
                 event_buffer.append(f"[{timestamp}] Status: DEAD")
