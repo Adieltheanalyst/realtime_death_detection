@@ -1,7 +1,8 @@
 import cv2
 from collections import deque
 import time
-import math 
+import numpy as np
+
 
 
 VIDEO_PATH=r"data/valorant_test_clip.mp4"
@@ -9,22 +10,51 @@ DEATH_TEMPLATE_PATH = r"data\death_template.png"
 TARGET_FPS=4
 BUFFER_SECONDS=10
 MAX_BUFFER_LENGTH=TARGET_FPS * BUFFER_SECONDS
+START_TIME_SEC = 55
+
+ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 1369, 504, 1875, 635
 MATCH_THRESHOLD = 0.75
-
 CONFIRM_FRAMES=2
+RESPAWN_CONFIRM_FRAMES=4
 
-ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 1369, 504, 17296, 627
+
+DAMAGE_THRESHOLD = 12.0
+
+EDGE_STRIP = 60
+DAMAGE_DELTA=4.0
+BASELINE_ALPHA=0.05
 
 
+# HP_X1, HP_Y1, HP_X2, HP_Y2 = 0, 0, 0, 0   # <-- replace
+# HP_BRIGHTNESS = 170
 event_buffer=deque(maxlen=MAX_BUFFER_LENGTH)
 
 def mock_llm_summarizer(buffer_data):
     """Placeholder for your OpenAI/Gemini API call"""
     print("\n[SYSTEM] Compiling 10-second buffer data...")
     prompt_context= "\n".join(buffer_data)
-
     time.sleep(1)
-    return "Player took damager, dropped to 10 health and was eliminated"
+    return "Player took damage, dropped to 10 health and was eliminated"
+
+# def estimate_health(gray_frame):
+#     """Health %, from how much of the bar's width contains bright pixels."""
+#     strip = gray_frame[HP_Y1:HP_Y2, HP_X1:HP_X2]
+#     _, binary = cv2.threshold(strip, HP_BRIGHTNESS, 255, cv2.THRESH_BINARY)
+#     filled_columns = (binary.max(axis=0) > 0).sum()
+#     return int(round(100 * filled_columns / binary.shape[1]))
+
+def damage_redness(frame_bgr):
+    """Mean 'redness' of the left/right/bottom screen edges.
+    High values mean the red damage vignette is on screen."""
+    h, w = frame_bgr.shape[:2]
+    s = EDGE_STRIP
+    strips = [frame_bgr[:, :s], frame_bgr[:, w - s:], frame_bgr[h - s:, :]]
+    score = 0.0
+    for st in strips:
+        st = st.astype(np.int16)
+        redness = np.clip(st[:, :, 2] - (st[:, :, 1] + st[:, :, 0]) // 2, 0, 255)
+        score += float(redness.mean())
+    return score / len(strips)
 
 def main():
     cap=cv2.VideoCapture(VIDEO_PATH)
@@ -51,9 +81,8 @@ def main():
     original_fps=cap.get(cv2.CAP_PROP_FPS)
     frame_skip_interval = int(original_fps/TARGET_FPS)
     
-    start_time_sec = 55
-    cap.set(cv2.CAP_PROP_POS_MSEC, start_time_sec * 1000)
-    frame_count= int(start_time_sec*original_fps)
+    cap.set(cv2.CAP_PROP_POS_MSEC, START_TIME_SEC * 1000)
+    frame_count= int(START_TIME_SEC*original_fps)
     
     print(f"Starting pipeline. Original FPS: {original_fps}." 
           f"Processing at {TARGET_FPS} FPS."
@@ -62,7 +91,13 @@ def main():
     cv2.namedWindow("Video Feed", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Video Feed", 1280, 720)
 
+    # State
+    player_state= "ALIVE"
     consecutive_hits=0
+    consecutive_misses = 0
+    was_taking_damage=False
+    redness_baseline = None
+    death_count=0
 
     while True:
         ret,frame=cap.read()
@@ -80,7 +115,7 @@ def main():
         if frame_count % frame_skip_interval != 0:
             continue
 
-        current_time_sec = frame_count/ original_fps
+        current_time_sec = frame_count / original_fps
         timestamp=f"{current_time_sec:.1f}s"
 
         # Lightweight CV / METADATA EXTRACTION 
@@ -96,39 +131,58 @@ def main():
 
         
 
-        # if math.isinf(max_val) or math.isnan(max_val):
-        #     max_val=0.0
-        print(f"[{timestamp}] ROI Confidence: {max_val:.2f}")
+        banner_present = max_val >= MATCH_THRESHOLD
+        consecutive_hits = consecutive_hits +1 if banner_present else 0
+        consecutive_misses=0 if banner_present else consecutive_misses + 1
 
+        redness = damage_redness(frame)
+        if redness_baseline is None:
+            redness_baseline = redness
+        taking_damage = redness >= redness_baseline + DAMAGE_DELTA
+        if not taking_damage:
+            redness_baseline = ((1- BASELINE_ALPHA)* redness_baseline
+                                + BASELINE_ALPHA*redness )
+        print(f"[{timestamp}] State: {player_state} | Conf: {max_val:.2f} | "
+              f"Redness: {redness:.1f} (base {redness_baseline:.1f})")
 
-        if max_val >= MATCH_THRESHOLD:
-            consecutive_hits += 1
-        else:
-            consecutive_hits = 0
+        if player_state == "ALIVE":
+            if taking_damage and not was_taking_damage:
+                event_buffer.append(f"[{timestamp}] EVENT: TOOK DAMAGE")
+            else:
+                event_buffer.append(f"[{timestamp}] Status: Alive")
+            was_taking_damage = taking_damage
 
-        status = "DEAD" if consecutive_hits>= CONFIRM_FRAMES else "Alive"
+            if consecutive_hits >= CONFIRM_FRAMES:
+                death_count += 1
+                detection_time = time.time()
+                event_buffer.append(f"[{timestamp}] Status: DEAD")
 
-        mock_health=100
-        event_buffer.append(f"[{timestamp}] Health: {mock_health} | Status: {status}")
+                print(f"\n[CV TRIGGER] Death #{death_count} detected at "
+                      f"{timestamp} (confidence {max_val:.2f})")
+                print("--- BUFFER CONTENTS ---")
+                print("\n".join(event_buffer))
 
-        if status == "DEAD":
-            detection_time = time.time()
-            print(f"\n[CV TRIGGER] Death detected at {timestamp}"
-                  f"(confidence {max_val:.2f}, confirmed over" 
-                  f"{CONFIRM_FRAMES} frames)")
-            summary= mock_llm_summarizer(list(event_buffer))
-            done_time = time.time()
+                summary= mock_llm_summarizer(list(event_buffer))
+                done_time = time.time()
+                print(f"\n>>> SUMMARY: {summary}")
+                print(f">>> LATENCY: {done_time - detection_time:.2f}s "
+                      f"(detection-to-summary)\n")
 
-            print(f"\n>>> FINAL OUTPUT: {summary}")
-            print(f">>> SUMMARIZATION LATENCY: {done_time - detection_time:.2f}s "
-                  f"(detection-to-summary)")
-            break
+                event_buffer.clear()
+                player_state="DEAD"
+                was_taking_damage=False
 
-        # if cv2.waitKey(1) & 0xFF == ord('q'):
-        #     break
-
+        elif player_state == "DEAD":
+            if consecutive_misses >= RESPAWN_CONFIRM_FRAMES:
+                player_state = "ALIVE"
+                event_buffer.clear()
+                event_buffer.append(f"[{timestamp}] EVENT: RESPAWNED")
+                print(f"\n[STATE] Respawn detected at {timestamp}. "
+                      f"Buffer flushed - watching for next death.\n")
     cap.release()
     cv2.destroyAllWindows()
+    print(f"\nRun complete. Deaths detected and summarized: {death_count}")
+    
 
 if __name__ == "__main__":
     main()
