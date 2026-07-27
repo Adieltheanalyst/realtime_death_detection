@@ -51,6 +51,6 @@ y2 = min(fh, y + h + MARGIN)
 print("\nPaste these constants into main.py:")
 print(f"HUD_X1, HUD_Y1, HUD_X2, HUD_Y2 = {x1}, {y1}, {x2}, {y2}")
 
-# 
+
 cv2.imwrite("hud_crop_review.png", crop)
 print("Saved hud_crop_preview.pmg - open it and confirm it shows the element ")
