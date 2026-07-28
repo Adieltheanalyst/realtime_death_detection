@@ -2,6 +2,11 @@ import cv2
 from collections import deque
 import time
 import numpy as np
+import os
+from google import genai
+from dotenv import load_dotenv
+load_dotenv()
+
 
 
 
@@ -11,17 +16,17 @@ HUD_TEMPLATE_PATH=r"data\hud_template.png"
 TARGET_FPS=4
 BUFFER_SECONDS=10
 MAX_BUFFER_LENGTH=TARGET_FPS * BUFFER_SECONDS
-START_TIME_SEC = 0
+START_TIME_SEC = 620
 
 ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 1300, 250, 1920, 800
 MATCH_THRESHOLD = 0.75
-CONFIRM_FRAMES=2
+CONFIRM_FRAMES=3
 
 HUD_X1, HUD_Y1, HUD_X2, HUD_Y2 = 698, 1026, 1248, 1080
 
 HUD_MATCH_THRESHOLD=0.70
 
-RESPAWN_CONFIRM_FRAMES=4
+RESPAWN_CONFIRM_FRAMES=6
 
 
 DAMAGE_THRESHOLD = 12.0
@@ -29,18 +34,54 @@ DAMAGE_THRESHOLD = 12.0
 EDGE_STRIP = 60
 DAMAGE_DELTA=4.0
 BASELINE_ALPHA=0.05
+BANNER_CLEAR_THRESHOLD = 0.50
+
+DEBUG_SNAPSHOTS = True
+SNAPSHOT_DIR = "debug_snapshots"
+
+
+LLM_MODEL = "gemini-2.5-flash"
+
+SUMMARIZER_PROMPT = """You are an esports analyst. Below is a metadata log \
+from the final seconds before a player died in Valorant. Each line has a \
+video timestamp. TOOK DAMAGE means the player was hit. RESPAWNED at the \
+start means the player had just respawned (a very short log means they \
+died almost immediately after spawning - say so). No damage events before \
+death means they were likely killed instantly.
+
+Write ONE or TWO short sentences explaining how the death played out, \
+using the timing (e.g. how long between last damage and death). No \
+preamble, no bullet points.
+
+EVENT LOG:
+{log}"""
+
+def fallback_summary(buffer_data):
+    """Rule based summary if the API is unavailable - keeps the demo alive"""
+    damage_times=[ln.split("]")[0].strip("[") for ln in buffer_data
+                  if "TOOK DAMAGE" in ln]
+
+    if not damage_times:
+        return "Player was eliminated with no prior damage recorded - likely an instant kill."
+    return (f"Player took damage {len(damage_times)} time(s)"
+            f"(last at {damage_times[-1]}) before being eliminated.")
 
 
 # HP_X1, HP_Y1, HP_X2, HP_Y2 = 0, 0, 0, 0   # <-- replace
 # HP_BRIGHTNESS = 170
 event_buffer=deque(maxlen=MAX_BUFFER_LENGTH)
 
-def mock_llm_summarizer(buffer_data):
-    """Placeholder for your OpenAI/Gemini API call"""
-    print("\n[SYSTEM] Compiling 10-second buffer data...")
-    prompt_context= "\n".join(buffer_data)
-    time.sleep(1)
-    return "Player took damage, dropped to 10 health and was eliminated"
+def llm_summarizer(buffer_data):
+    prompt = SUMMARIZER_PROMPT.format(log="\n".join(buffer_data))
+    try:
+        client = genai.Client()
+        response= client.models.generate_content(
+            model=LLM_MODEL, contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e: 
+        print(f"[Warn] LLM call failed ({e}); using rule-based fallback.")
+        return fallback_summary(buffer_data)
 
 
 def damage_redness(frame_bgr):
@@ -60,12 +101,36 @@ def roi_match(gray_frame,template, x1,y1,x2,y2):
     """Best template- match confidence inside a rectangular ROI."""
     roi = gray_frame[y1:y2, x1:x2]
     result = cv2.matchTemplate(roi, template,cv2.TM_CCOEFF_NORMED)
-    _,max_val,_,_ = cv2.minMaxLoc(result)
-    return max_val
+    _,max_val,_,max_loc = cv2.minMaxLoc(result)
+    return max_val,max_loc,roi
 
+def validated_death_conf(gray_frame, template):
+
+    conf,loc, roi = roi_match(gray_frame, template,
+                              ROI_X1, ROI_Y1, ROI_X2, ROI_Y2)
+
+    th, tw = template.shape
+    x,y = loc
+    patch=roi[y:y + th, x:x + tw]
+    if patch.size == 0 or patch.std() < 15 or patch.max() < 150:
+        return 0.0
+    return conf
+
+def save_snapshot(frame, label, timestamp, death_conf, hud_conf):
+    if not DEBUG_SNAPSHOTS:
+        return
+    annotated = frame.copy()
+    cv2.putText(annotated,
+                f"{label} @ {timestamp}  Death:{death_conf:.2f}  HUD:{hud_conf:.2f}",
+                (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+    cv2.rectangle(annotated, (ROI_X1, ROI_Y1), (ROI_X2, ROI_Y2), (0, 0, 255), 2)
+    cv2.rectangle(annotated, (HUD_X1, HUD_Y1), (HUD_X2, HUD_Y2), (0, 255, 0), 2)
+    fname = f"{SNAPSHOT_DIR}/{label}_{timestamp.replace('.', '_')}.png"
+    cv2.imwrite(fname, annotated)
 
 
 def main():
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
     cap=cv2.VideoCapture(VIDEO_PATH)
 
     if not cap.isOpened():
@@ -134,9 +199,9 @@ def main():
         gray_frame=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
         # roi = gray_frame[ROI_Y1:ROI_Y2, ROI_X1:ROI_X2]
 
-        death_conf = roi_match(gray_frame, death_template,
-                               ROI_X1, ROI_Y1, ROI_X2, ROI_Y2)
-        hud_conf = roi_match(gray_frame, hud_template,
+        death_conf = validated_death_conf(gray_frame, death_template)
+
+        hud_conf,_,_ = roi_match(gray_frame, hud_template,
                              HUD_X1, HUD_Y1, HUD_X2, HUD_Y2)
         
 
@@ -152,12 +217,11 @@ def main():
         
 
         banner_present = death_conf >= MATCH_THRESHOLD
+        banner_maybe= death_conf >= BANNER_CLEAR_THRESHOLD
         hud_present = hud_conf >= HUD_MATCH_THRESHOLD
         consecutive_deaths=consecutive_deaths + 1 if banner_present else 0
         consecutive_hud = (consecutive_hud + 1 
-                           if (hud_present and not banner_present) else 0)
-
-
+                           if (hud_present and not banner_maybe) else 0)
 
         redness = damage_redness(frame)
         if redness_baseline is None:
@@ -165,9 +229,10 @@ def main():
         taking_damage = (hud_present and
                          redness >= redness_baseline + DAMAGE_DELTA)
 
-        if hud_present and not taking_damage:
-            redness_baseline = ((1 - BASELINE_ALPHA) * redness_baseline
-                                + BASELINE_ALPHA * redness)
+        if hud_present:
+            alpha = BASELINE_ALPHA if not taking_damage else 0.01
+            redness_baseline = ((1 - alpha) * redness_baseline
+                                + alpha * redness)
         print(f"[{timestamp}] {player_state} | Death: {death_conf:.2f} | "
               f"HUD: {hud_conf:.2f} | Red: {redness:.1f}" 
               f"(base {redness_baseline:.1f})")
@@ -188,10 +253,12 @@ def main():
 
                 print(f"\n[CV TRIGGER] Death #{death_count} detected at "
                       f"{timestamp} (confidence {death_conf:.2f})")
+                save_snapshot(frame, f"death{death_count}", timestamp,
+                              death_conf, hud_conf)
                 print("--- BUFFER CONTENTS ---")
                 print("\n".join(event_buffer))
 
-                summary= mock_llm_summarizer(list(event_buffer))
+                summary= llm_summarizer(list(event_buffer))
                 done_time = time.time()
                 print(f"\n>>> SUMMARY: {summary}")
                 print(f">>> LATENCY: {done_time - detection_time:.2f}s "
@@ -207,6 +274,8 @@ def main():
                 player_state = "ALIVE"
                 event_buffer.clear()
                 event_buffer.append(f"[{timestamp}] EVENT: RESPAWNED")
+                save_snapshot(frame, "respawn", timestamp,
+                              death_conf, hud_conf)
                 print(f"\n[STATE] Respawn detected at {timestamp}. "
                       f"(HUD back). Buffer flushed.\n")
     cap.release()
