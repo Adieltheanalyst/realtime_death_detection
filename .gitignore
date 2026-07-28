@@ -9,3 +9,4 @@ wheels/
 # Virtual environments
 .venv
 data/valorant_test_clip.mp4
+.env
