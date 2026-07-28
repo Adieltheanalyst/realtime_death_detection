@@ -16,7 +16,7 @@ HUD_TEMPLATE_PATH=r"data\hud_template.png"
 TARGET_FPS=4
 BUFFER_SECONDS=10
 MAX_BUFFER_LENGTH=TARGET_FPS * BUFFER_SECONDS
-START_TIME_SEC = 620
+START_TIME_SEC = 55
 
 ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 1300, 250, 1920, 800
 MATCH_THRESHOLD = 0.75
@@ -40,7 +40,7 @@ DEBUG_SNAPSHOTS = True
 SNAPSHOT_DIR = "debug_snapshots"
 
 
-LLM_MODEL = "gemini-2.5-flash"
+LLM_MODEL = "gemini-3.6-flash"
 
 SUMMARIZER_PROMPT = """You are an esports analyst. Below is a metadata log \
 from the final seconds before a player died in Valorant. Each line has a \
