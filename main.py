@@ -10,13 +10,14 @@ load_dotenv()
 
 
 
-VIDEO_PATH=r"data/valorant_test_clip.mp4"
+VIDEO_PATH=r"data/ValorantDeath.mp4"
+
 DEATH_TEMPLATE_PATH = r"data\death_template.png"
 HUD_TEMPLATE_PATH=r"data\hud_template.png"
 TARGET_FPS=4
 BUFFER_SECONDS=10
 MAX_BUFFER_LENGTH=TARGET_FPS * BUFFER_SECONDS
-START_TIME_SEC = 20
+START_TIME_SEC = 1
 
 ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 1300, 250, 1920, 800
 MATCH_THRESHOLD = 0.75
